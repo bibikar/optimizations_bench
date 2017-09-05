@@ -34,6 +34,7 @@ import numpy.core.umath as ncu
 import numpy as np
 import argparse
 from collections import OrderedDict
+from args import getArguments
 
 try:
     from itimer import itime_rdtsc as clock
@@ -53,20 +54,17 @@ argParser = argparse.ArgumentParser(prog="numpy_tests.py",
                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 argParser.add_argument('-l', '--log',       default=None,      help="log")
-argParser.add_argument('-i', '--iteration', default='?',       help="iteration")
-argParser.add_argument('-p', '--prefix',    default='?',       help="prefix string")
-argParser.add_argument('-s', '--size',      default=None,      help="size of array")
 argParser.add_argument('-f', '--func',      default=None,      help="single function to test")
 argParser.add_argument('-g', '--goal-time', default=1,         help="goal for measured time in ms")
 argParser.add_argument('-r', '--repeats',   default=30,        help="repeat experements and get minimum time")
 argParser.add_argument('-o', '--offsets',   default=(0,1,2,4), help="Offset from aligned in elements", nargs='+', type=int)
 argParser.add_argument('-v', '--verbose',   default=False,     help="print additonal info", action="store_true")
-args = argParser.parse_args()
+args = getArguments(argParser)
 
 goalTime = float(args.goal_time)/1000.
-array_sizes = [1000, 8000, 32000, 100000, 1000000, 2500000] if args.size is None else [int(args.size)]
-func_list = ['sin', 'cos', 'tan', 'sinh', 'cosh', 'tanh', 'fabs', 'floor', 'ceil', 'rint', 'trunc', 'sqrt', 'log10',
-             'log', 'exp', 'expm1', 'arcsin', 'arccos', 'arctan', 'arcsinh', 'arccosh', 'arctanh', 'log1p', 'exp2',
+array_sizes = [1000, 8000, 32000, 100000, 1000000, 2500000] if args.size is None else args.size
+func_list = ['sin', 'cos', 'tan', 'sinh', 'cosh', 'tanh', 'fabs', 'floor', 'ceil', 'rint', 'trunc', 'sqrt', 'invsqrt', 'log10',
+             'log', 'erf', 'exp', 'expm1', 'arcsin', 'arccos', 'arctan', 'arcsinh', 'arccosh', 'arctanh', 'log1p', 'exp2',
              'log2', 'copyto'] if args.func is None else [str(args.func)]
 binary_ops =  OrderedDict([('+', np.add), ('*', np.multiply), ('/',  np.true_divide), ('-', np.subtract)]) if args.func is None else {}
 scalararraytypes = range(0, 3)
@@ -134,7 +132,7 @@ def getInternalCount(func, z, x, y = None):
     return internalCount, timing2
 
 def checkResults(CPEs):
-    if not args.verbose:
+    if args.verbose:
        a = CPEs.ravel()
        if(a[0] > np.min(a)*1.15):
           print("warning: anomaly detected, use --verbose and improve stability, [0]:", a[0], " min:", np.min(a))
@@ -146,8 +144,8 @@ def clOffset(a):
     return int(a.__array_interface__['data'][0]) % 64
 
 overheadMin = runBench(emptyF, 0, 0, internalCount=100000, overhead=0)
-print("Overhead time per loop iteration = ",  overheadMin, " clock = ", clock_name)
-print("iteration, prefix, op, type, iterations, size, CPE:aligned, CPE:max")
+if args.verbose:
+    print("Overhead time per loop iteration = ",  overheadMin, " clock = ", clock_name)
 
 for np_type in np_types:
   zoffsets = xoffsets = yoffsets = args.offsets
@@ -165,7 +163,8 @@ for np_type in np_types:
         zoff = int((64-clOffset(z0))%64/z0.itemsize)
         xoff = int((64-clOffset(x0))%64/x0.itemsize)
         yoff = int((64-clOffset(y0))%64/y0.itemsize)
-        print("Unaligned array data allocation detected, aligning with offsets:", zoff, xoff, yoff)
+        if args.verbose:
+            print("Unaligned array data allocation detected, aligning with offsets:", zoff, xoff, yoff)
         z0 = z0[zoff:n+zoff+16]
         x0 = x0[xoff:n+xoff+16]
         y0 = y0[yoff:n+yoff+16]
@@ -208,18 +207,28 @@ for np_type in np_types:
                 if args.verbose:
                     print(args.iteration, args.prefix, satype, np_type.__name__, '% 6d'%internalCount, '% 7d'%n, '% 4.2f'%CPE_min, sep=', ', flush=True)
         if scalararraytype == 0:
-            satype = '    A%sA' % op
+            satype = 'array%sarray' % op
         elif scalararraytype == 1:
-            satype = '    A%ss' % op
+            satype = 'array%sscalar' % op
         elif scalararraytype == 2:
-            satype = '    s%sA' % op
+            satype = 'scalar%sarray' % op
         checkResults(CPEs)
-        print(args.iteration, args.prefix, satype, np_type.__name__, '% 7d'%internalCount, '% 7d'%n, '% 6.2f'%CPEs[0][0][0], '% 6.2f'%np.max(CPEs), sep=', ', flush=True)
+        print(args.batchID, args.arch, args.prefix, satype, args.core_number, "Double", '%d' % n, '%.2f' % CPEs[0][0][0], '%.2f' % np.max(CPEs), sep=',', flush=True)
 
     CPEs = np.zeros([znoffs,xnoffs])
     for func in func_list:
         a0 = y0 if func in ['arccosh'] else x0 # otherwise it results in a complex number
-        np_func = getattr(np.core.umath, func, getattr(np, func))
+        try:
+            np_func = getattr(np.core.umath, func, getattr(np, func))
+        except:
+            if func == "erf":
+                from scipy.special import erf
+                np_func = erf
+            elif func == "invsqrt":
+                np_func = lambda x, y: 1/np.sqrt(x, y)
+            else:
+                print("%s does not exist. Exiting..." % func)
+                sys.exit(-1)
         internalCount, internalTime = getInternalCount(np_func, z0, a0)
         for zi in reversed(range(znoffs)):
           for xi in reversed(range(xnoffs)):
@@ -239,4 +248,4 @@ for np_type in np_types:
                 satype = 'c[%d:]=% 7s(a[%d:])'%(clOffset(z)/z.itemsize, func, clOffset(x)/x.itemsize)
                 print(args.iteration, args.prefix, satype, np_type.__name__, '% 6d'%internalCount, '% 7d'%n, '% 4.2f'%CPE_min, sep=', ', flush=True)
         checkResults(CPEs)
-        print(args.iteration, args.prefix, '% 7s'%func, np_type.__name__, '% 7d'%internalCount, '% 7d'%n, '% 6.2f'%CPEs[0][0], '% 6.2f'%np.max(CPEs), sep=', ', flush=True)
+        print(args.batchID, args.arch, args.prefix, '%s' % func, args.core_number, "Double", '%d' % n, '%.2f' % CPEs[0][0], '%.2f' % np.max(CPEs), sep=',', flush=True)
